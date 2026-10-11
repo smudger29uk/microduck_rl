@@ -79,6 +79,26 @@ from .microduck_hop_env_cfg import (
     make_microduck_hop_env_cfg,
     MicroduckHopRlCfg,
 )
+from .microduck_hop2_env_cfg import (
+    make_microduck_hop2_env_cfg,
+    MicroduckHop2RlCfg,
+)
+from .microduck_hop3_env_cfg import (
+    make_microduck_hop3_env_cfg,
+    MicroduckHop3RlCfg,
+)
+from .microduck_hop4_env_cfg import (
+    make_microduck_hop4_env_cfg,
+    MicroduckHop4RlCfg,
+)
+from .microduck_hop6_env_cfg import (
+    make_microduck_hop6_env_cfg,
+    MicroduckHop6RlCfg,
+)
+from .microduck_hop5_env_cfg import (
+    make_microduck_hop5_env_cfg,
+    MicroduckHop5RlCfg,
+)
 from .backlash import make_backlash_variant
 
 # Standard velocity task
@@ -243,6 +263,51 @@ register_mjlab_task(
     env_cfg=make_microduck_hop_env_cfg(),
     play_env_cfg=make_microduck_hop_env_cfg(play=True),
     rl_cfg=MicroduckHopRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop2 — takeoff-relative flight height, dense crouch, head hold (see its docstring).
+register_mjlab_task(
+    task_id="Mjlab-Hop2-Flat-MicroDuck",
+    env_cfg=make_microduck_hop2_env_cfg(),
+    play_env_cfg=make_microduck_hop2_env_cfg(play=True),
+    rl_cfg=MicroduckHop2RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop3 — foot-clearance flight, slewed charge-up crouch (see its docstring).
+register_mjlab_task(
+    task_id="Mjlab-Hop3-Flat-MicroDuck",
+    env_cfg=make_microduck_hop3_env_cfg(),
+    play_env_cfg=make_microduck_hop3_env_cfg(play=True),
+    rl_cfg=MicroduckHop3RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop4 — Hop3 + upright gates on crouch and flight (see its docstring).
+register_mjlab_task(
+    task_id="Mjlab-Hop4-Flat-MicroDuck",
+    env_cfg=make_microduck_hop4_env_cfg(),
+    play_env_cfg=make_microduck_hop4_env_cfg(play=True),
+    rl_cfg=MicroduckHop4RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop5 — Hop4 + balanced slewed squat pose reference (see its docstring).
+register_mjlab_task(
+    task_id="Mjlab-Hop5-Flat-MicroDuck",
+    env_cfg=make_microduck_hop5_env_cfg(),
+    play_env_cfg=make_microduck_hop5_env_cfg(play=True),
+    rl_cfg=MicroduckHop5RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop6 — Hop5 rewards, intended warm start from Hop4 (see its docstring).
+register_mjlab_task(
+    task_id="Mjlab-Hop6-Flat-MicroDuck",
+    env_cfg=make_microduck_hop6_env_cfg(),
+    play_env_cfg=make_microduck_hop6_env_cfg(play=True),
+    rl_cfg=MicroduckHop6RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 

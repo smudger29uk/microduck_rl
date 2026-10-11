@@ -7498,3 +7498,771 @@ def hop_crouch_reward(
     target = target[:, joint_indices]
     score = torch.exp(-((joint_pos - target) / std) ** 2).mean(dim=-1)
     return score * (grounded & crouching).float()
+
+
+# ── Hop2 (takeoff-relative flight height, dense crouch) ──────────────────────
+#
+# Fixes diagnosed in HANDOFF.md for the original hop (separate state buffers,
+# so the original hop_* functions are untouched and both tasks coexist):
+#   • Height is measured against the trunk z at TAKEOFF (last grounded step),
+#     not a fixed STAND_Z datum, so straightening the legs while a foot is
+#     still down — or a momentary clearance from a taller stance — scores zero.
+#     Only trunk rise while BOTH feet are off the ground counts.
+#   • Crouch is a dense, clamped depth reward (no hard 0.095 gate), paid only
+#     until the hop completes so it cannot be farmed after landing.
+
+def _hop2_state(env: ManagerBasedRlEnv) -> torch.Tensor:
+    if not hasattr(env, "_hop2_peak"):
+        z = torch.zeros(env.num_envs, device=env.device)
+        env._hop2_peak = z.clone()
+        env._hop2_prev_peak = z.clone()
+        env._hop2_takeoff_z = z.clone()
+        env._hop2_last_update_step = -1
+    return env._hop2_peak
+
+
+def _update_hop2(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    left_sensor_name: str,
+    right_sensor_name: str,
+) -> None:
+    """Step-guarded update of takeoff_z and the flight-height peak. Stores the
+    pre-update peak in _hop2_prev_peak so reward-term evaluation order does
+    not matter."""
+    _hop2_state(env)
+    step = int(env.common_step_counter)
+    if step == env._hop2_last_update_step:
+        return
+    env._hop2_last_update_step = step
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        env._hop2_prev_peak = env._hop2_peak.clone()
+        return
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    airborne = (~left) & (~right)
+    env._hop2_takeoff_z = torch.where(airborne, env._hop2_takeoff_z, z)
+    rise = torch.clamp(z - env._hop2_takeoff_z, min=0.0)
+    candidate = torch.where(airborne, rise, torch.zeros_like(rise))
+    env._hop2_prev_peak = env._hop2_peak.clone()
+    env._hop2_peak = torch.maximum(env._hop2_peak, candidate)
+
+
+def reset_hop2_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    standing_z_min: float = 0.11,
+    standing_z_max: float = 0.12,
+    standing_tilt_max: float = 0.0,
+    joint_noise_std: float = 0.02,
+) -> None:
+    """reset_hop_state (standing spawn) + zero the hop2 peak and seed
+    takeoff_z with the spawn height."""
+    if env_ids is None or len(env_ids) == 0:
+        return
+    reset_hop_state(
+        env, env_ids, asset_cfg, standing_z_min, standing_z_max,
+        standing_tilt_max, joint_noise_std,
+    )
+    env_ids = env_ids.to(env.device, dtype=torch.long)
+    _hop2_state(env)
+    env._hop2_peak[env_ids] = 0.0
+    env._hop2_prev_peak[env_ids] = 0.0
+    env._hop2_takeoff_z[env_ids] = env.sim.data.qpos[env_ids, 2]
+
+
+def hop2_airborne_progress(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str = "left_foot_ground_contact",
+    right_sensor_name: str = "right_foot_ground_contact",
+    max_paid_height: float = 0.06,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Pay increments of the takeoff-relative flight-height frontier, capped
+    at max_paid_height and normalised by it (potential-based, unfarmable)."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_hop2(env, asset, left_sensor_name, right_sensor_name)
+    delta = torch.clamp(env._hop2_peak, max=max_paid_height) - torch.clamp(
+        env._hop2_prev_peak, max=max_paid_height
+    )
+    return torch.clamp(delta, min=0.0) / max_paid_height
+
+
+def hop2_completion_gate(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    min_hop_height: float = 0.015,
+    gate_width: float = 0.01,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Smoothstep of the takeoff-relative peak: 0 below min_hop_height, 1 at
+    min_hop_height + gate_width."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_hop2(env, asset, left_sensor_name, right_sensor_name)
+    t = torch.clamp((env._hop2_peak - min_hop_height) / max(gate_width, 1e-6), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def hop2_landing_composite(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    target_height: float,
+    height_std: float,
+    upright_std: float,
+    pose_std: float,
+    joint_indices: list,
+    min_hop_height: float = 0.015,
+    gate_width: float = 0.01,
+    target_overrides: Optional[dict] = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """standing_composite_score x hop2 completion gate."""
+    gate = hop2_completion_gate(
+        env, left_sensor_name, right_sensor_name, min_hop_height, gate_width, asset_cfg
+    )
+    score = standing_composite_score(
+        env, target_height, height_std, upright_std, pose_std, joint_indices,
+        target_overrides, asset_cfg,
+    )
+    return score * gate
+
+
+def hop2_stand_tax(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    target_height: float,
+    min_hop_height: float = 0.015,
+    gate_width: float = 0.01,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Completion-gated cost for sitting below target_height after hopping.
+    Self-negating (<= 0): use a POSITIVE weight."""
+    gate = hop2_completion_gate(
+        env, left_sensor_name, right_sensor_name, min_hop_height, gate_width, asset_cfg
+    )
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    return -torch.clamp(target_height - z, min=0.0) * gate
+
+
+def hop2_crouch_depth(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    full_depth: float = 0.04,
+    min_hop_height: float = 0.015,
+    gate_width: float = 0.01,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Dense crouch reward in [0, 1]: (standing_height - z) / full_depth,
+    clamped, while at least one foot is grounded. Fades out as the hop
+    completes (x (1 - completion gate)) so a crouch cannot be farmed after
+    landing; the post-hop stand tax then pulls back up to standing."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    grounded = (left | right).float()
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    depth = torch.clamp((standing_height - z) / full_depth, 0.0, 1.0)
+    gate = hop2_completion_gate(
+        env, left_sensor_name, right_sensor_name, min_hop_height, gate_width, asset_cfg
+    )
+    return depth * grounded * (1.0 - gate)
+
+
+# ── Hop3 (foot-clearance flight, slewed charge-up crouch) ────────────────────
+#
+# Hop2's flight metric (trunk rise above takeoff z) was inflated by the legs
+# unfolding in the air: a headless trace of the trained policy showed ~13 mm
+# of real foot clearance for ~0.1 s against a "30 mm" trunk rise, and a crouch
+# that was a ~0.15 s fold, followed by 87% of the episode standing still.
+#   • Flight = min(left, right) foot-geom height above its resting height while
+#     BOTH feet are off the ground. Only a real clearance pays.
+#   • The maneuver is spec'd by hard state gates, not nudges: a hop only counts
+#     if (a) the trunk was crouched >= ~25 mm below standing at some grounded
+#     point earlier this episode and (b) episode time >= min_launch_s.
+#   • Crouch is a SLEWED target (constant-rate descent, then hold): being ahead
+#     of the ramp pays less, so slow is the argmax. Pays only before the hop
+#     completes and only inside a time window, so it can't be farmed.
+
+def _hop3_state(env: ManagerBasedRlEnv) -> torch.Tensor:
+    if not hasattr(env, "_hop3_peak"):
+        z = torch.zeros(env.num_envs, device=env.device)
+        env._hop3_peak = z.clone()
+        env._hop3_prev_peak = z.clone()
+        env._hop3_crouch_min = torch.full_like(z, 9.0)
+        env._hop3_last_update_step = -1
+    return env._hop3_peak
+
+
+def _hop3_foot_geom_ids(env: ManagerBasedRlEnv, asset: Entity) -> list:
+    if not hasattr(env, "_hop3_foot_ids"):
+        names = asset.geom_names
+        env._hop3_foot_ids = [
+            names.index("left_foot_collision"), names.index("right_foot_collision"),
+        ]
+    return env._hop3_foot_ids
+
+
+def _smoothstep01(x: torch.Tensor) -> torch.Tensor:
+    t = torch.clamp(x, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _update_hop3(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    foot_rest_z: float,
+    crouch_full_depth: float,
+    min_launch_s: float,
+) -> None:
+    """Step-guarded: tracks the lowest grounded trunk z, and the peak foot
+    clearance (scaled by the crouch-charge factor and the min-launch-time
+    gate). Stores the pre-update peak so term evaluation order is irrelevant."""
+    _hop3_state(env)
+    step = int(env.common_step_counter)
+    if step == env._hop3_last_update_step:
+        return
+    env._hop3_last_update_step = step
+    env._hop3_prev_peak = env._hop3_peak.clone()
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return
+    origin_z = env.scene.terrain.env_origins[:, 2]
+    z = torch.nan_to_num(asset.data.root_link_pos_w[:, 2] - origin_z, nan=0.0)
+    grounded = left | right
+    env._hop3_crouch_min = torch.where(
+        grounded, torch.minimum(env._hop3_crouch_min, z), env._hop3_crouch_min
+    )
+    ids = _hop3_foot_geom_ids(env, asset)
+    foot_z = torch.nan_to_num(asset.data.geom_pos_w[:, ids, 2] - origin_z.unsqueeze(1), nan=0.0)
+    clearance = torch.clamp(foot_z.min(dim=1).values - foot_rest_z, min=0.0)
+    charge = _smoothstep01(
+        (standing_height - env._hop3_crouch_min) / crouch_full_depth
+    )
+    t_s = env.episode_length_buf.float() * env.step_dt
+    late_enough = (t_s >= min_launch_s).float()
+    candidate = torch.where(grounded, torch.zeros_like(clearance), clearance * charge * late_enough)
+    env._hop3_peak = torch.maximum(env._hop3_peak, candidate)
+
+
+def reset_hop3_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    standing_z_min: float = 0.11,
+    standing_z_max: float = 0.12,
+    standing_tilt_max: float = 0.0,
+    joint_noise_std: float = 0.02,
+) -> None:
+    """reset_hop_state (standing spawn) + zero the hop3 peak / crouch memory."""
+    if env_ids is None or len(env_ids) == 0:
+        return
+    reset_hop_state(
+        env, env_ids, asset_cfg, standing_z_min, standing_z_max,
+        standing_tilt_max, joint_noise_std,
+    )
+    env_ids = env_ids.to(env.device, dtype=torch.long)
+    _hop3_state(env)
+    env._hop3_peak[env_ids] = 0.0
+    env._hop3_prev_peak[env_ids] = 0.0
+    env._hop3_crouch_min[env_ids] = 9.0
+
+
+def hop3_airborne_progress(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.5,
+    max_paid_height: float = 0.04,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Pay increments of the foot-clearance frontier (capped, normalised)."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_hop3(
+        env, asset, left_sensor_name, right_sensor_name, standing_height,
+        foot_rest_z, crouch_full_depth, min_launch_s,
+    )
+    delta = torch.clamp(env._hop3_peak, max=max_paid_height) - torch.clamp(
+        env._hop3_prev_peak, max=max_paid_height
+    )
+    return torch.clamp(delta, min=0.0) / max_paid_height
+
+
+def hop3_completion_gate(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.5,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_hop3(
+        env, asset, left_sensor_name, right_sensor_name, standing_height,
+        foot_rest_z, crouch_full_depth, min_launch_s,
+    )
+    return _smoothstep01((env._hop3_peak - min_hop_height) / max(gate_width, 1e-6))
+
+
+def hop3_landing_composite(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    target_height: float,
+    height_std: float,
+    upright_std: float,
+    pose_std: float,
+    joint_indices: list,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.5,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    target_overrides: Optional[dict] = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    gate = hop3_completion_gate(
+        env, left_sensor_name, right_sensor_name, target_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, min_hop_height, gate_width, asset_cfg,
+    )
+    score = standing_composite_score(
+        env, target_height, height_std, upright_std, pose_std, joint_indices,
+        target_overrides, asset_cfg,
+    )
+    return score * gate
+
+
+def hop3_stand_tax(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    target_height: float,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.5,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Self-negating (<= 0): use a POSITIVE weight."""
+    gate = hop3_completion_gate(
+        env, left_sensor_name, right_sensor_name, target_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, min_hop_height, gate_width, asset_cfg,
+    )
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    return -torch.clamp(target_height - z, min=0.0) * gate
+
+
+def hop3_crouch_ramp(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    crouch_depth: float = 0.035,
+    ramp_s: float = 0.6,
+    window_s: float = 1.2,
+    std: float = 0.012,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.5,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Gaussian on trunk z against a slewed reference that descends from
+    standing_height to standing_height - crouch_depth at a constant rate over
+    ramp_s, then holds until window_s. Paid only while a foot is grounded,
+    inside the window, and before the hop completes. Being below the ramp
+    (dropping faster) is penalised by the Gaussian exactly like lagging it, so
+    the slow, visible charge-up is the argmax."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    grounded = (left | right).float()
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    t_s = env.episode_length_buf.float() * env.step_dt
+    z_ref = standing_height - crouch_depth * torch.clamp(t_s / ramp_s, 0.0, 1.0)
+    track = torch.exp(-((z - z_ref) / std) ** 2)
+    in_window = (t_s < window_s).float()
+    gate = hop3_completion_gate(
+        env, left_sensor_name, right_sensor_name, standing_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, min_hop_height, gate_width, asset_cfg,
+    )
+    return track * grounded * in_window * (1.0 - gate)
+
+
+# ── Hop4 (Hop3 + upright gates) ──────────────────────────────────────────────
+#
+# Hop3's final checkpoint hops for real (40 mm mean foot clearance, 100% upright
+# at the end) but 1) leans ~16 deg forward during the crouch (a lean lowers the
+# trunk as well as a squat does and nothing taxed it), 2) tilts ~27 deg in
+# flight, and 3) the iteration-1000 checkpoint farmed "lying on its back with
+# feet up" as flight. Hop4 closes those with state gates:
+#   • crouch memory counts only grounded steps with tilt < crouch_tilt_ok_deg
+#   • flight clearance counts only with trunk z > min_flight_z (kills the flop)
+#     and is faded by tilt (full below flight_tilt_full_deg, zero at _zero_deg)
+#   • the slewed crouch reward is faded by tilt (full below 8 deg, zero at 25)
+
+def _hop4_state(env: ManagerBasedRlEnv) -> torch.Tensor:
+    if not hasattr(env, "_hop4_peak"):
+        z = torch.zeros(env.num_envs, device=env.device)
+        env._hop4_peak = z.clone()
+        env._hop4_prev_peak = z.clone()
+        env._hop4_crouch_min = torch.full_like(z, 9.0)
+        env._hop4_last_update_step = -1
+    return env._hop4_peak
+
+
+def _tilt_deg(asset: Entity) -> torch.Tensor:
+    g = torch.nan_to_num(asset.data.projected_gravity_b, nan=0.0)
+    return torch.rad2deg(torch.acos((-g[:, 2]).clamp(-1.0, 1.0)))
+
+
+def _update_hop4(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    foot_rest_z: float,
+    crouch_full_depth: float,
+    min_launch_s: float,
+    crouch_tilt_ok_deg: float,
+    flight_tilt_full_deg: float,
+    flight_tilt_zero_deg: float,
+    min_flight_z: float,
+) -> None:
+    _hop4_state(env)
+    step = int(env.common_step_counter)
+    if step == env._hop4_last_update_step:
+        return
+    env._hop4_last_update_step = step
+    env._hop4_prev_peak = env._hop4_peak.clone()
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return
+    origin_z = env.scene.terrain.env_origins[:, 2]
+    z = torch.nan_to_num(asset.data.root_link_pos_w[:, 2] - origin_z, nan=0.0)
+    tilt = _tilt_deg(asset)
+    grounded = left | right
+    crouch_ok = grounded & (tilt < crouch_tilt_ok_deg)
+    env._hop4_crouch_min = torch.where(
+        crouch_ok, torch.minimum(env._hop4_crouch_min, z), env._hop4_crouch_min
+    )
+    ids = _hop3_foot_geom_ids(env, asset)
+    foot_z = torch.nan_to_num(asset.data.geom_pos_w[:, ids, 2] - origin_z.unsqueeze(1), nan=0.0)
+    clearance = torch.clamp(foot_z.min(dim=1).values - foot_rest_z, min=0.0)
+    charge = _smoothstep01((standing_height - env._hop4_crouch_min) / crouch_full_depth)
+    t_s = env.episode_length_buf.float() * env.step_dt
+    late_enough = (t_s >= min_launch_s).float()
+    upright = 1.0 - _smoothstep01(
+        (tilt - flight_tilt_full_deg) / max(flight_tilt_zero_deg - flight_tilt_full_deg, 1e-6)
+    )
+    high_enough = (z > min_flight_z).float()
+    candidate = torch.where(
+        grounded,
+        torch.zeros_like(clearance),
+        clearance * charge * late_enough * upright * high_enough,
+    )
+    env._hop4_peak = torch.maximum(env._hop4_peak, candidate)
+
+
+def reset_hop4_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    standing_z_min: float = 0.11,
+    standing_z_max: float = 0.12,
+    standing_tilt_max: float = 0.0,
+    joint_noise_std: float = 0.02,
+) -> None:
+    if env_ids is None or len(env_ids) == 0:
+        return
+    reset_hop_state(
+        env, env_ids, asset_cfg, standing_z_min, standing_z_max,
+        standing_tilt_max, joint_noise_std,
+    )
+    env_ids = env_ids.to(env.device, dtype=torch.long)
+    _hop4_state(env)
+    env._hop4_peak[env_ids] = 0.0
+    env._hop4_prev_peak[env_ids] = 0.0
+    env._hop4_crouch_min[env_ids] = 9.0
+
+
+def _hop4_update_args(p: dict) -> tuple:
+    return (
+        p["foot_rest_z"], p["crouch_full_depth"], p["min_launch_s"],
+        p["crouch_tilt_ok_deg"], p["flight_tilt_full_deg"], p["flight_tilt_zero_deg"],
+        p["min_flight_z"],
+    )
+
+
+def hop4_airborne_progress(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.8,
+    crouch_tilt_ok_deg: float = 20.0,
+    flight_tilt_full_deg: float = 20.0,
+    flight_tilt_zero_deg: float = 40.0,
+    min_flight_z: float = 0.09,
+    max_paid_height: float = 0.04,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_hop4(
+        env, asset, left_sensor_name, right_sensor_name, standing_height,
+        foot_rest_z, crouch_full_depth, min_launch_s, crouch_tilt_ok_deg,
+        flight_tilt_full_deg, flight_tilt_zero_deg, min_flight_z,
+    )
+    delta = torch.clamp(env._hop4_peak, max=max_paid_height) - torch.clamp(
+        env._hop4_prev_peak, max=max_paid_height
+    )
+    return torch.clamp(delta, min=0.0) / max_paid_height
+
+
+def hop4_completion_gate(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.8,
+    crouch_tilt_ok_deg: float = 20.0,
+    flight_tilt_full_deg: float = 20.0,
+    flight_tilt_zero_deg: float = 40.0,
+    min_flight_z: float = 0.09,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_hop4(
+        env, asset, left_sensor_name, right_sensor_name, standing_height,
+        foot_rest_z, crouch_full_depth, min_launch_s, crouch_tilt_ok_deg,
+        flight_tilt_full_deg, flight_tilt_zero_deg, min_flight_z,
+    )
+    return _smoothstep01((env._hop4_peak - min_hop_height) / max(gate_width, 1e-6))
+
+
+def hop4_landing_composite(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    target_height: float,
+    height_std: float,
+    upright_std: float,
+    pose_std: float,
+    joint_indices: list,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.8,
+    crouch_tilt_ok_deg: float = 20.0,
+    flight_tilt_full_deg: float = 20.0,
+    flight_tilt_zero_deg: float = 40.0,
+    min_flight_z: float = 0.09,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    target_overrides: Optional[dict] = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    gate = hop4_completion_gate(
+        env, left_sensor_name, right_sensor_name, target_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, crouch_tilt_ok_deg, flight_tilt_full_deg,
+        flight_tilt_zero_deg, min_flight_z, min_hop_height, gate_width, asset_cfg,
+    )
+    score = standing_composite_score(
+        env, target_height, height_std, upright_std, pose_std, joint_indices,
+        target_overrides, asset_cfg,
+    )
+    return score * gate
+
+
+def hop4_stand_tax(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    target_height: float,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.8,
+    crouch_tilt_ok_deg: float = 20.0,
+    flight_tilt_full_deg: float = 20.0,
+    flight_tilt_zero_deg: float = 40.0,
+    min_flight_z: float = 0.09,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Self-negating (<= 0): use a POSITIVE weight."""
+    gate = hop4_completion_gate(
+        env, left_sensor_name, right_sensor_name, target_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, crouch_tilt_ok_deg, flight_tilt_full_deg,
+        flight_tilt_zero_deg, min_flight_z, min_hop_height, gate_width, asset_cfg,
+    )
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    return -torch.clamp(target_height - z, min=0.0) * gate
+
+
+def hop4_crouch_ramp(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    crouch_depth: float = 0.035,
+    ramp_s: float = 0.8,
+    window_s: float = 1.6,
+    std: float = 0.012,
+    tilt_full_deg: float = 8.0,
+    tilt_zero_deg: float = 25.0,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.8,
+    crouch_tilt_ok_deg: float = 20.0,
+    flight_tilt_full_deg: float = 20.0,
+    flight_tilt_zero_deg: float = 40.0,
+    min_flight_z: float = 0.09,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """hop3_crouch_ramp x upright factor: a forward-leaning dive tracks the
+    height ramp but is faded out by tilt, so the legs must do the folding."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    grounded = (left | right).float()
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    t_s = env.episode_length_buf.float() * env.step_dt
+    z_ref = standing_height - crouch_depth * torch.clamp(t_s / ramp_s, 0.0, 1.0)
+    track = torch.exp(-((z - z_ref) / std) ** 2)
+    in_window = (t_s < window_s).float()
+    upright = 1.0 - _smoothstep01(
+        (_tilt_deg(asset) - tilt_full_deg) / max(tilt_zero_deg - tilt_full_deg, 1e-6)
+    )
+    gate = hop4_completion_gate(
+        env, left_sensor_name, right_sensor_name, standing_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, crouch_tilt_ok_deg, flight_tilt_full_deg,
+        flight_tilt_zero_deg, min_flight_z, min_hop_height, gate_width, asset_cfg,
+    )
+    return track * grounded * in_window * upright * (1.0 - gate)
+
+
+# ── Hop5 (Hop4 + slewed squat POSE reference) ────────────────────────────────
+#
+# Hop4's crouch reward tracks trunk height only, so any joint combination that
+# lowers the trunk scores the same. Measured on Hop4 model_500: hip yaw splayed
+# ~0.35 rad outward, the two legs squatted differently (left knee 0.84 vs right
+# 0.47), and the neck swung 0.68 rad. A balanced flat-footed squat (sole flat,
+# trunk upright, CoM held over the foot, solved by FK) is knee 1.10 / hip +0.16
+# / ankle 0.92 for a 32 mm drop; hip pitch going from -0.46 to positive is
+# REQUIRED to keep the CoM over the foot, not a fault. The old HOP_CROUCH
+# target (hip -0.65) puts the CoM ~5 mm behind the heel, which is why policies
+# counterbalanced with the head.
+
+def hop5_crouch_pose_ramp(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    standing_height: float,
+    joint_indices: list,
+    squat_overrides: dict,
+    crouch_depth: float = 0.032,
+    ramp_s: float = 0.8,
+    window_s: float = 1.6,
+    height_std: float = 0.012,
+    pose_std: float = 0.3,
+    tilt_full_deg: float = 8.0,
+    tilt_zero_deg: float = 25.0,
+    foot_rest_z: float = 0.006,
+    crouch_full_depth: float = 0.03,
+    min_launch_s: float = 0.8,
+    crouch_tilt_ok_deg: float = 20.0,
+    flight_tilt_full_deg: float = 20.0,
+    flight_tilt_zero_deg: float = 40.0,
+    min_flight_z: float = 0.09,
+    min_hop_height: float = 0.010,
+    gate_width: float = 0.008,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """hop4_crouch_ramp x a slewed joint-pose Gaussian. The joint reference
+    blends HOME -> squat_overrides at the same constant rate as the height
+    reference; exp(-mean(((q - q_ref)/pose_std)^2)) over joint_indices means
+    one badly-off joint (hip yaw splay, an asymmetric leg) costs visibly."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    grounded = (left | right).float()
+    asset = env.scene[asset_cfg.name]
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    t_s = env.episode_length_buf.float() * env.step_dt
+    s = torch.clamp(t_s / ramp_s, 0.0, 1.0)
+    z_ref = standing_height - crouch_depth * s
+    height_track = torch.exp(-((z - z_ref) / height_std) ** 2)
+
+    home = _servo_default_joint_pos(env, asset).clone()
+    target = home.clone()
+    for idx, val in squat_overrides.items():
+        target[:, idx] = val
+    q_ref = (home + s.unsqueeze(-1) * (target - home))[:, joint_indices]
+    q = _servo_joint_pos(env, asset)[:, joint_indices]
+    pose_track = torch.exp(-(((q - q_ref) / pose_std) ** 2).mean(dim=-1))
+
+    in_window = (t_s < window_s).float()
+    upright = 1.0 - _smoothstep01(
+        (_tilt_deg(asset) - tilt_full_deg) / max(tilt_zero_deg - tilt_full_deg, 1e-6)
+    )
+    gate = hop4_completion_gate(
+        env, left_sensor_name, right_sensor_name, standing_height, foot_rest_z,
+        crouch_full_depth, min_launch_s, crouch_tilt_ok_deg, flight_tilt_full_deg,
+        flight_tilt_zero_deg, min_flight_z, min_hop_height, gate_width, asset_cfg,
+    )
+    return height_track * pose_track * grounded * in_window * upright * (1.0 - gate)
