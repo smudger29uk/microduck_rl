@@ -7986,6 +7986,10 @@ def _update_hop4(
     ids = _hop3_foot_geom_ids(env, asset)
     foot_z = torch.nan_to_num(asset.data.geom_pos_w[:, ids, 2] - origin_z.unsqueeze(1), nan=0.0)
     clearance = torch.clamp(foot_z.min(dim=1).values - foot_rest_z, min=0.0)
+    if getattr(env, "_hop4_trunk_coupled", False):
+        # Hop7: flight only counts if the TRUNK also rises above standing
+        # height, so tucking/flicking the feet up cannot pay on its own.
+        clearance = torch.minimum(clearance, torch.clamp(z - standing_height, min=0.0))
     charge = _smoothstep01((standing_height - env._hop4_crouch_min) / crouch_full_depth)
     t_s = env.episode_length_buf.float() * env.step_dt
     late_enough = (t_s >= min_launch_s).float()
@@ -8266,3 +8270,21 @@ def hop5_crouch_pose_ramp(
         flight_tilt_zero_deg, min_flight_z, min_hop_height, gate_width, asset_cfg,
     )
     return height_track * pose_track * grounded * in_window * upright * (1.0 - gate)
+
+
+def reset_hop7_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    standing_z_min: float = 0.11,
+    standing_z_max: float = 0.12,
+    standing_tilt_max: float = 0.0,
+    joint_noise_std: float = 0.02,
+) -> None:
+    """reset_hop4_state + switch on trunk-coupled flight (see _update_hop4).
+    The flag lives on the env instance, so Hop2-Hop6 are unaffected."""
+    env._hop4_trunk_coupled = True
+    reset_hop4_state(
+        env, env_ids, asset_cfg, standing_z_min, standing_z_max,
+        standing_tilt_max, joint_noise_std,
+    )

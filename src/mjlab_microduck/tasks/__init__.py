@@ -91,6 +91,14 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop8_env_cfg import (
+    make_microduck_hop8_env_cfg,
+    MicroduckHop8RlCfg,
+)
+from .microduck_hop7_env_cfg import (
+    make_microduck_hop7_env_cfg,
+    MicroduckHop7RlCfg,
+)
 from .microduck_hop6_env_cfg import (
     make_microduck_hop6_env_cfg,
     MicroduckHop6RlCfg,
@@ -308,6 +316,24 @@ register_mjlab_task(
     env_cfg=make_microduck_hop6_env_cfg(),
     play_env_cfg=make_microduck_hop6_env_cfg(play=True),
     rl_cfg=MicroduckHop6RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop7 — trunk-coupled flight, extended-leg airborne pose, stronger head hold.
+register_mjlab_task(
+    task_id="Mjlab-Hop7-Flat-MicroDuck",
+    env_cfg=make_microduck_hop7_env_cfg(),
+    play_env_cfg=make_microduck_hop7_env_cfg(play=True),
+    rl_cfg=MicroduckHop7RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop8 — Hop7 with a stronger height incentive (see its docstring).
+register_mjlab_task(
+    task_id="Mjlab-Hop8-Flat-MicroDuck",
+    env_cfg=make_microduck_hop8_env_cfg(),
+    play_env_cfg=make_microduck_hop8_env_cfg(play=True),
+    rl_cfg=MicroduckHop8RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
