@@ -1,68 +1,63 @@
 # Handoff: Microduck hop (jump) training, local on this PC
 
-Written 2026-10-11 from a claude.ai session. Read this first. The user wants to do all training LOCALLY on this PC. Never use `--hf-jobs`.
+Last updated 2026-10-13 (Claude Code session). Read this first. All training is LOCAL on this PC. Never use `--hf-jobs`.
 
 Style: UK English, no em dashes, concise, numbered steps, one thing at a time.
 
-## Machine
-- Ubuntu PC, Ryzen 7 5800X, 128 GB RAM, RTX 3070 (8 GB VRAM), `uv` installed, Python 3.12 venvs via `uv sync`.
-- Training stack: mjlab 1.3.0 (MuJoCo Warp) + rsl_rl PPO, BAM actuator model.
+## Machine and stack
+- Ubuntu PC, Ryzen 7 5800X, 128 GB RAM, RTX 3070 (8 GB), `uv`, Python 3.12 venv in `.venv` (`uv sync`).
+- mjlab 1.3.0 (MuJoCo Warp) + rsl_rl PPO, BAM actuator model. Working folder: `~/robotics/microduck_rl_jump`.
+- Other folders in `~/robotics`: `microduck_rl` (fork on Pollen's spring_v2, not used here), `microduck` (Rust runtime for the real robot), `jump-src` (original tarball).
 
-## Folders in ~/robotics
-- `microduck_rl_jump/`  EXACT code snapshot the HF job ran (from tarball `src-20260911-072331.tar.gz`, private HF dataset `smudger29uk/mjlab-microduck-src`). This is the working folder. It contains the custom hop task. Check `git status` and `git log`: a snapshot commit was attempted, the user may or may not have completed it.
-- `microduck_rl/`       fork `smudger29uk/microduck_rl`, currently on branch `my-jump` tracking `upstream/spring_v2` (Pollen's spring hop branch). NOT the user's jump. Ignore for this work.
-- `microduck/`          fork of the Rust runtime for the physical robot (not needed for training).
-- `jump-src/`           the downloaded tarball.
+## Where we are up to
+Tasks `Mjlab-Hop-Flat-MicroDuck` (hop 1, original) and `Mjlab-Hop2..Hop9-Flat-MicroDuck`, each built on the previous one, in `src/mjlab_microduck/tasks/microduck_hopN_env_cfg.py` (docstrings explain each change). Reward functions are in `tasks/mdp.py` (hop section from about line 7191, hop3 to hop5 helpers after it, `hop9_horizontal_speed_penalty` at the end).
 
-## The task
-- Task id: `Mjlab-Hop-Flat-MicroDuck`
-- Env config: `src/mjlab_microduck/tasks/microduck_hop_env_cfg.py`
-- Reward functions: `src/mjlab_microduck/tasks/mdp.py`, hop section starts around line 7191 (`_update_hop_peak`, `hop_airborne_progress`, `hop_completion_gate`, `hop_landing_composite`, `hop_stand_tax`, `hop_tuck_reward`, `hop_crouch_reward`). `com_upward_velocity` is around line 900.
-- Obs: actor 61, critic 74. Actions: 14 joints. 50 Hz, 3 s episodes (150 steps).
-- Joint layout: 0-4 left leg, 5-8 neck/head (neck_pitch, head_pitch, head_yaw, head_roll), 9-13 right leg.
+Measured with `scripts/hop_eval.py` (256 envs, one 3 s episode each). Trunk rise = trunk z above 115 mm standing height while both feet are off the ground. Foot clearance = lowest foot above rest height.
 
-## History
-- Original HF Job 2026-09-11: 2000 iterations, 4096 envs, L4. W&B run `garry-smith29-hobbyist/mjlab_microduck/lno7bpp6`.
-- Checkpoints: HF model repo `smudger29uk/mjlab-hop-flat-microduck-20260911-072331` (model_0 ... model_1999.pt). Downloaded to `microduck_rl_jump/checkpoints/` and copied to `logs/rsl_rl/microduck_hop/2026-09-11_06-45-00_microduck_hop/`.
-- Local resume currently running in tmux session `hop` (check `tmux ls`), started about 23:48 on 2026-10-10:
+| Run | Checkpoint | Trunk rise mean | Foot clearance mean | Post-landing speed | Verdict |
+|---|---|---|---|---|---|
+| Hop 6 warm | model_5998 | 4.6 mm | n/a | n/a | heel kick, toes up, head pitched down |
+| Hop 7 warm | model_9997 | 14.8 mm | 15.5 mm | 0.27 m/s | head and crouch good. User: "95% there" |
+| Hop 8 warm2 | model_15995 | 15.8 mm | 19.3 mm | 0.33 m/s | highest so far, but stumbles forward on landing (about 0.5 m drift per episode) |
+| Hop 9 long | model_22000 | 14.7 mm | 16.6 mm | 0.11 m/s | best stable landing, about 1 to 3 mm lower than hop 8. Viewer shown, user decision pending |
 
+User's goal: about 5 mm more body AND foot height than hop 7 (so trunk about 20 mm), keeping the crouch, hop and level head.
+
+Failures to remember:
+- Hop 7 from scratch (6000 its) never learned to hop. Hop 5 from scratch also never launched. Warm start from a policy that already hops.
+- Hop 9 long run (10000 its after the first 4000) COLLAPSED between iterations 26000 and 26500: it ends lying on its back with feet up (49 mm foot clearance, 1.8 mm trunk rise). Cause not found. Do not trust the final checkpoint, nor its `.onnx` (written at the end of training). Checkpoints 20250 to 26000 are fine.
+- `hop_launch_velocity` was capped at max_vz 0.6 m/s, but a 20 mm rise needs about 0.63 m/s. Hop 9 raised the cap to 0.85, but height did not improve (the speed penalty may be holding it back).
+
+## Next options (nothing started)
+1. Hop 10: keep the landing fix but lower the horizontal-speed penalty weight (3.0) or apply it only after flight, and add a guard against the on-back, feet-up hack (for example require trunk z and tilt in the flight score, or terminate on prolonged tilt). Warm start from hop 9 model_22000 or hop 8 model_15995. Run short (about 2000 its) and eval often.
+2. Export an ONNX from the chosen checkpoint with `uv run scripts/export.py <task> --checkpoint ...` (bakes in the obs normaliser) before using it on the robot. None exists yet for model_22000.
+3. Decision on moving to Windows is open (WSL2 suggested as the safest route). Back up first, then smoke test.
+
+## How to run things
+Warm start (copy the source checkpoint into a folder under the new experiment first):
 ```
-uv run train Mjlab-Hop-Flat-MicroDuck --env.scene.num-envs 2048 --agent.max_iterations 2000 \
-    --agent.run-name hop-local --agent.resume True \
-    --agent.load-run 2026-09-11_06-45-00_microduck_hop --agent.load-checkpoint model_1999.pt
+mkdir -p logs/rsl_rl/microduck_hopN/prev_src
+cp -r <run folder>/{model_X.pt,params} logs/rsl_rl/microduck_hopN/prev_src/
+uv run train Mjlab-HopN-Flat-MicroDuck --env.scene.num-envs 2048 --agent.max_iterations 2000 \
+    --agent.run-name hopN-warm --agent.resume True \
+    --agent.load-run prev_src --agent.load-checkpoint model_X.pt
 ```
-  It resumed at iteration 2000 and runs to 3999. About 1.45 s per iteration, about 3.5 GB VRAM. New checkpoints save every 250 iterations into a new folder under `logs/rsl_rl/microduck_hop/` with `hop-local` in the name. DO NOT kill it unless the user agrees.
+- About 1.5 s per iteration, about 3.6 GB VRAM, 2000 its is about 50 min. Always smoke test a new task first: 64 envs, `--agent.max_iterations 5`.
+- Evaluate headless: `uv run python scripts/hop_eval.py <task> <path to model.pt>` (trunk rise, foot clearance, airborne steps, drift, post-landing speed and tilt).
+- View: `uv run play <task> --num-envs 4 --viewer native --checkpoint-file <path>`. `--viewer viser` crashes. Wayland and OpenGL warnings are harmless.
+- Tests (CPU): `uv run --with pytest pytest tests/` (85 pass at last run).
 
-## Viewing a policy
-```
-uv run play Mjlab-Hop-Flat-MicroDuck --num-envs 4 --viewer native --checkpoint-file <path to model_XXXX.pt>
-```
-`--viewer viser` crashes with `AssertionError: assert max >= value >= min` in mjlab's `velocity_command.py` create_gui slider (twist ranges are +/-0.01 in this task). Use `--viewer native`.
+## Gotchas
+- The last saved checkpoint is named one below the final iteration (for example model_9997 for iteration 9998). Intermediate ones save every 250.
+- On resume the iteration counter carries on from the checkpoint, so env-step curricula start at their LATE stage (action-rate penalty, stand tax, etc. already at final values).
+- `Episode_Reward/<term>` in logs is the WEIGHTED value. Self-negating penalties take a POSITIVE weight and must log <= 0.
+- Never run `pkill -f` or `pgrep -f` with a pattern that also appears in your own command line (it kills or matches the calling shell). Use `ps -eo pid,args | grep "[v]env/bin/play"`.
+- `hop3` to `hop6` score flight as foot clearance (so tucking feet counted). From hop 7 on, `reset_hop7_state` sets `env._hop4_trunk_coupled = True`, so flight = min(foot clearance, trunk rise above standing).
+- Earlier docstrings quote "27 mm" or "40 mm" clearance for hop 3/4: that is foot clearance on their own measure, not comparable with trunk rise.
 
-## Observed behaviour of model_1999
-Small bounces or heel lifts, feet barely leave the ground. The head turns left for no reason.
-
-## Diagnosis (from reading the code and logs)
-1. Height is measured against a fixed datum. `_update_hop_peak` takes trunk z minus `STAND_Z` (0.115) while both foot sensors read no contact. That is trunk rise, not flight height, so straightening the legs plus a momentary two-foot clearance can score as a hop.
-2. Everything saturates near 3 cm: `MAX_PAID_HOP_HEIGHT` = 0.035, gate opens at `MIN_HOP_HEIGHT` 0.020 and is full at 0.030. Final-iteration logs imply the average peak is about 30 mm of the 35 mm cap (assuming mjlab logs episode sums divided by episode seconds). No reward for going higher.
-3. `hop_landing_composite` (weight 4.0) logged 3.56 out of a possible 4.0: the gate opens in the first fraction of each episode, then the duck stands still collecting it.
-4. `hop_crouch` logs 0.0000: it only pays when trunk z < 0.095 and grounded (hard gate, no partial credit), while `height_stand_l1` (weight 0.6) penalises any deviation from 0.115 every step. No gradient into a crouch.
-5. Head drift: all pose rewards use `_LEG_JOINTS = [0,1,2,3,4,9,10,11,12,13]`. Joints 5-8 have no reward, and head/body command observations are zero padding.
-6. The running resume is in the curriculum's polish phase (arrival damping on from iteration 2000, stand tax to 3.0 at 2500, action rate to -0.3 at 3000). It will smooth landings but cannot raise jump height because of 1 and 2.
-7. For reference, Pollen's `upstream/spring_v2` hop task independently moved to "rise above takeoff height" and "airborne means ZERO ground contact".
-
-## Proposed next step (user said they want to do this in Claude Code; confirm before editing)
-Create a NEW task id, e.g. `Mjlab-Hop2-Flat-MicroDuck`, so the original stays reproducible. Do not edit the running training's task in place (the process already imported the code, but keep the original intact for comparison).
-1. Track `takeoff_z` (trunk z while any foot is grounded); peak = max of `z - takeoff_z` while both feet are off. Reset it in `reset_hop_state`.
-2. Raise ceilings, for example cap about 0.06 and gate about 0.015 to 0.025 (tune).
-3. Replace the hard crouch gate with a dense term: reward proportional to how far trunk z is below `STAND_Z` while grounded (clamped), and consider lowering `height_stand_l1`.
-4. Add a head/neck pose penalty on joints 5-8 (`pose_l1_penalty` with `joint_indices=[5,6,7,8]`, small positive weight, it is self-negating).
-5. Train from scratch (action std collapsed to 0.17, which limits exploration). Obs and action dims are unchanged, so warm starting is technically possible.
-6. Add or extend CPU tests in `tests/` (the repo has config and reward regression tests), run with `uv run --with pytest pytest tests/`.
-7. Launch with 2048 envs (about 48 min per 2000 iterations) or 4096 (VRAM has room, 41% used at 2048).
-
-## Outstanding housekeeping
-- GitHub backup of the snapshot is not done: `git remote add origin https://github.com/smudger29uk/microduck_rl.git` then `git push origin main:jump-2026-09-11`. `gh auth login` (device flow) was in progress, state unknown.
-- Git identity was set globally (Garry Smith).
-- W&B: user may be logged in, or use `WANDB_MODE=offline`. `play` can take `--checkpoint-file` so W&B is not needed for viewing.
-- Hugging Face CLI is logged in as `smudger29uk`.
+## Backups (as of 2026-10-13)
+- Code: GitHub `smudger29uk/microduck_rl` (PUBLIC), branch `jump-hop-2026-10-11` (hops 2 to 9, tests, scripts). Older snapshot on `jump-2026-09-11`. Untracked on purpose: `checkpoints/`, `MUJOCO_LOG.TXT`, `logs/`, `wandb/`.
+- Checkpoints: Hugging Face private model repo `smudger29uk/microduck-hop-local-runs`, one folder per run with the final model, `.onnx` (where trustworthy) and `params`: hop1-local to hop6-local, hop7-warm (9997), hop7-scratch (5999), hop8-warm2 (15995), hop9-long (22000, params only, no onnx).
+- Original HF Job runs (Sept 2026) are in private repos `smudger29uk/mjlab-hop-flat-microduck-<timestamp>`, source tarball in dataset `smudger29uk/mjlab-microduck-src`.
+- NOT backed up: full `logs/` and `wandb/` folders (W&B holds the curves online), intermediate checkpoints.
+- Logged in on this PC: `gh` as smudger29uk, Hugging Face CLI as smudger29uk (use `uv run --no-project --with huggingface_hub python -I script.py`, there is no `hf` binary), W&B.
