@@ -8288,3 +8288,18 @@ def reset_hop7_state(
         env, env_ids, asset_cfg, standing_z_min, standing_z_max,
         standing_tilt_max, joint_noise_std,
     )
+
+
+def hop9_horizontal_speed_penalty(
+    env: ManagerBasedRlEnv,
+    max_speed: float = 1.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Self-negating (<= 0): use a POSITIVE weight. -|v_xy| (clamped), so a
+    hop that lands and stumbles or walks off pays; a vertical hop that stays
+    put costs nothing. The task commands ~zero twist, so any sustained
+    horizontal speed is unwanted."""
+    asset: Entity = env.scene[asset_cfg.name]
+    v = torch.nan_to_num(asset.data.root_link_lin_vel_w[:, :2], nan=0.0).norm(dim=1)
+    return -torch.clamp(v, max=max_speed)
+

@@ -91,6 +91,10 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop9_env_cfg import (
+    make_microduck_hop9_env_cfg,
+    MicroduckHop9RlCfg,
+)
 from .microduck_hop8_env_cfg import (
     make_microduck_hop8_env_cfg,
     MicroduckHop8RlCfg,
@@ -334,6 +338,15 @@ register_mjlab_task(
     env_cfg=make_microduck_hop8_env_cfg(),
     play_env_cfg=make_microduck_hop8_env_cfg(play=True),
     rl_cfg=MicroduckHop8RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop9 — Hop8 + uncapped-enough launch velocity + horizontal-speed penalty.
+register_mjlab_task(
+    task_id="Mjlab-Hop9-Flat-MicroDuck",
+    env_cfg=make_microduck_hop9_env_cfg(),
+    play_env_cfg=make_microduck_hop9_env_cfg(play=True),
+    rl_cfg=MicroduckHop9RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
