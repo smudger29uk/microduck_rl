@@ -91,6 +91,10 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop11_env_cfg import (
+    make_microduck_hop11_env_cfg,
+    MicroduckHop11RlCfg,
+)
 from .microduck_hop10_env_cfg import (
     make_microduck_hop10_env_cfg,
     MicroduckHop10RlCfg,
@@ -360,6 +364,15 @@ register_mjlab_task(
     env_cfg=make_microduck_hop10_env_cfg(),
     play_env_cfg=make_microduck_hop10_env_cfg(play=True),
     rl_cfg=MicroduckHop10RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop11 — Hop10 + deeper FK-solved squat (40 mm) and matching charge depth.
+register_mjlab_task(
+    task_id="Mjlab-Hop11-Flat-MicroDuck",
+    env_cfg=make_microduck_hop11_env_cfg(),
+    play_env_cfg=make_microduck_hop11_env_cfg(play=True),
+    rl_cfg=MicroduckHop11RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
