@@ -1,6 +1,6 @@
 # Handoff: Microduck hop (jump) training, local on this PC
 
-Last updated 2026-10-13 (Claude Code session). Read this first. All training is LOCAL on this PC. Never use `--hf-jobs`.
+Last updated 2026-10-17 (Claude Code session). Read this first. All training is LOCAL on this PC. Never use `--hf-jobs`.
 
 Style: UK English, no em dashes, concise, numbered steps, one thing at a time.
 
@@ -28,7 +28,25 @@ Failures to remember:
 - Hop 9 long run (10000 its after the first 4000) COLLAPSED between iterations 26000 and 26500: it ends lying on its back with feet up (49 mm foot clearance, 1.8 mm trunk rise). Cause not found. Do not trust the final checkpoint, nor its `.onnx` (written at the end of training). Checkpoints 20250 to 26000 are fine.
 - `hop_launch_velocity` was capped at max_vz 0.6 m/s, but a 20 mm rise needs about 0.63 m/s. Hop 9 raised the cap to 0.85, but height did not improve (the speed penalty may be holding it back).
 
-## Next options (nothing started)
+## Hop 10 (2026-10-17)
+`Mjlab-Hop10-Flat-MicroDuck` = Hop9 + horizontal-speed penalty weight 3.0 -> 1.0 + `fell_over` termination (bad_orientation, 1.2 rad). Warm start from hop 9 model_22000: 2000 its (`hop10-warm`, model_23999), then 4000 more (`hop10-long`, from 23999).
+
+| Checkpoint | Trunk rise | Foot clearance | Post-flight speed | Drift |
+|---|---|---|---|---|
+| warm 23999 | 15.8 mm | 16.6 mm | 0.16 m/s | 514 mm |
+| long 26750 (BEST) | 16.0 mm (p90 19.1, max 21.0) | 17.4 mm | 0.18 m/s | 523 mm |
+| long 27998 (final) | 15.0 mm | 15.8 mm | 0.15 m/s | 521 mm |
+
+- No collapse in 6000 its, but height plateaued at 15 to 16 mm (target 20). More iterations of this recipe will not get there.
+- Net horizontal drift is about 520 mm in every checkpoint, whatever the speed-penalty weight. Probably not from the landing; cause not yet found.
+- ONNX for the best checkpoint: `checkpoints/hop10-long-26750/policy.onnx` (with model and params, untracked). NOT yet uploaded to Hugging Face (upload was blocked; needs the user's go-ahead). Hop 10 code is committed locally, not pushed.
+
+## Hop 11 proposal (not started)
+1. Find the drift source first: log when horizontal speed accrues (pre-crouch, push, landing) in `hop_eval.py`.
+2. Height: crouch bottoms out at about 84 mm. Try a deeper crouch requirement (raise `crouch_full_depth`/crouch target) so there is more stored push, and a launch reward that keeps paying above 0.63 m/s.
+3. Warm start from hop 10 model_26750, 2000 its, eval every 500.
+
+## Next options (older, from 2026-10-13)
 1. Hop 10: keep the landing fix but lower the horizontal-speed penalty weight (3.0) or apply it only after flight, and add a guard against the on-back, feet-up hack (for example require trunk z and tilt in the flight score, or terminate on prolonged tilt). Warm start from hop 9 model_22000 or hop 8 model_15995. Run short (about 2000 its) and eval often.
 2. Export an ONNX from the chosen checkpoint with `uv run scripts/export.py <task> --checkpoint ...` (bakes in the obs normaliser) before using it on the robot. None exists yet for model_22000.
 3. Decision on moving to Windows is open (WSL2 suggested as the safest route). Back up first, then smoke test.
