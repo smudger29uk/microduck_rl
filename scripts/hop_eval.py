@@ -41,7 +41,7 @@ print(f"crouch min trunk z (mm) mean {z.min(0).values.mean()*mm:.0f}   max tilt 
 first = torch.where(a.any(0), a.float().argmax(0), torch.full((a.shape[1],), 149, device=a.device))
 idx = torch.arange(150, device=a.device).unsqueeze(1)
 after = idx > (first + a.float().cumsum(0).max(0).values.long()).unsqueeze(0)
-drift = (xy[-1] - xy[0]).norm(dim=1)
+drift = (xy[-2] - xy[0]).norm(dim=1)  # [-2]: the last step is the timeout reset (teleport to a new spawn)
 v_after = torch.where(after, vxy, torch.zeros_like(vxy)).max(0).values
 t_after = torch.where(after, t, torch.zeros_like(t)).max(0).values
 print(f"net horizontal drift over episode (mm): mean {drift.mean()*mm:.0f} p90 {drift.quantile(.9)*mm:.0f} max {drift.max()*mm:.0f}")
