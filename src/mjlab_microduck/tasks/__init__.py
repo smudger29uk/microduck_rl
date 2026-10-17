@@ -91,6 +91,10 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop10_env_cfg import (
+    make_microduck_hop10_env_cfg,
+    MicroduckHop10RlCfg,
+)
 from .microduck_hop9_env_cfg import (
     make_microduck_hop9_env_cfg,
     MicroduckHop9RlCfg,
@@ -347,6 +351,15 @@ register_mjlab_task(
     env_cfg=make_microduck_hop9_env_cfg(),
     play_env_cfg=make_microduck_hop9_env_cfg(play=True),
     rl_cfg=MicroduckHop9RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop10 — Hop9 + softer horizontal-speed penalty + fell_over termination.
+register_mjlab_task(
+    task_id="Mjlab-Hop10-Flat-MicroDuck",
+    env_cfg=make_microduck_hop10_env_cfg(),
+    play_env_cfg=make_microduck_hop10_env_cfg(play=True),
+    rl_cfg=MicroduckHop10RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
