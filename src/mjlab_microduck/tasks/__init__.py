@@ -91,6 +91,10 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop14_env_cfg import (
+    make_microduck_hop14_env_cfg,
+    MicroduckHop14RlCfg,
+)
 from .microduck_hop13_env_cfg import (
     make_microduck_hop13_env_cfg,
     MicroduckHop13RlCfg,
@@ -399,6 +403,15 @@ register_mjlab_task(
     env_cfg=make_microduck_hop13_env_cfg(),
     play_env_cfg=make_microduck_hop13_env_cfg(play=True),
     rl_cfg=MicroduckHop13RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop14 — Hop12 + grounded-and-rising horizontal-speed penalty (fix the backwards push).
+register_mjlab_task(
+    task_id="Mjlab-Hop14-Flat-MicroDuck",
+    env_cfg=make_microduck_hop14_env_cfg(),
+    play_env_cfg=make_microduck_hop14_env_cfg(play=True),
+    rl_cfg=MicroduckHop14RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 

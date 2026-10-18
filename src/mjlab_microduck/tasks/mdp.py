@@ -8353,3 +8353,26 @@ def hop13_airborne_drift_penalty(
     asset: Entity = env.scene[asset_cfg.name]
     v = torch.nan_to_num(asset.data.root_link_lin_vel_w[:, :2], nan=0.0).norm(dim=1)
     return -torch.clamp(v, max=max_speed) * airborne
+
+
+def hop14_push_drift_penalty(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    max_speed: float = 0.5,
+    min_vz: float = 0.05,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Self-negating (<= 0): use a POSITIVE weight. -|v_xy| (clamped) while at
+    least one foot is on the ground AND the trunk is rising (vz > min_vz), i.e.
+    the push phase. Acts where the launch direction is set, not in the air
+    (Hop13), and cannot be dodged by flying less: it is zero in flight and
+    while crouching."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    asset: Entity = env.scene[asset_cfg.name]
+    vel = torch.nan_to_num(asset.data.root_link_lin_vel_w, nan=0.0)
+    pushing = (left | right) & (vel[:, 2] > min_vz)
+    return -torch.clamp(vel[:, :2].norm(dim=1), max=max_speed) * pushing.float()
