@@ -8331,3 +8331,25 @@ def reset_hop12_state(
         env, env_ids, asset_cfg, standing_z_min, standing_z_max,
         standing_tilt_max, joint_noise_std,
     )
+
+
+def hop13_airborne_drift_penalty(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    max_speed: float = 0.5,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Self-negating (<= 0): use a POSITIVE weight. -|v_xy| (clamped) paid ONLY
+    while both feet are off the ground. Horizontal speed at takeoff is what
+    carries the trunk sideways through the whole flight (ballistic), so this
+    taxes a leaning launch directly, where hop9_horizontal_speed_penalty is
+    one small term spread over every step."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    airborne = ((~left) & (~right)).float()
+    asset: Entity = env.scene[asset_cfg.name]
+    v = torch.nan_to_num(asset.data.root_link_lin_vel_w[:, :2], nan=0.0).norm(dim=1)
+    return -torch.clamp(v, max=max_speed) * airborne

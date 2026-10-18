@@ -20,11 +20,14 @@ u = env.unwrapped; robot = u.scene["robot"]
 ids = mdp._hop3_foot_geom_ids(u, robot)
 obs = env.get_observations()
 zs, air, fz, tilt, xy, vxy = [], [], [], [], [], []
+yaw0 = None
 with torch.no_grad():
     for _ in range(150):
         obs, _, _, _ = env.step(pol(obs))
         l = mdp._sensor_any_contact(u, "left_foot_ground_contact"); r = mdp._sensor_any_contact(u, "right_foot_ground_contact")
         zs.append(robot.data.root_link_pos_w[:, 2].clone()); air.append((~l) & (~r))
+        if yaw0 is None:
+            _q = robot.data.root_link_quat_w; yaw0 = torch.atan2(2*(_q[:,0]*_q[:,3]+_q[:,1]*_q[:,2]), 1-2*(_q[:,2]**2+_q[:,3]**2))
         xy.append(robot.data.root_link_pos_w[:, :2].clone()); vxy.append(robot.data.root_link_lin_vel_w[:, :2].norm(dim=1).clone())
         fz.append(robot.data.geom_pos_w[:, ids, 2].min(1).values.clone() - 0.006); tilt.append(mdp._tilt_deg(robot))
 z, a, f, t = map(torch.stack, (zs, air, fz, tilt))
@@ -46,3 +49,12 @@ v_after = torch.where(after, vxy, torch.zeros_like(vxy)).max(0).values
 t_after = torch.where(after, t, torch.zeros_like(t)).max(0).values
 print(f"net horizontal drift over episode (mm): mean {drift.mean()*mm:.0f} p90 {drift.quantile(.9)*mm:.0f} max {drift.max()*mm:.0f}")
 print(f"peak horizontal speed after flight (m/s): mean {v_after.mean():.2f} p90 {v_after.quantile(.9):.2f}   max tilt after flight (deg): mean {t_after.mean():.1f} p90 {t_after.quantile(.9):.1f}")
+
+
+# body-frame displacement along the heading at the first step (negative = backwards). Spawn yaw is random,
+# so world x/y alone says nothing about "backwards". Last step excluded (timeout reset teleport).
+fwd = lambda p: (p[..., 0] - xy[0, :, 0]) * torch.cos(yaw0) + (p[..., 1] - xy[0, :, 1]) * torch.sin(yaw0)
+last_air = torch.stack([(torch.where(a[:, i])[0].max() if a[:, i].any() else torch.tensor(0, device=a.device)) for i in range(a.shape[1])])
+f_td = fwd(xy[last_air, torch.arange(a.shape[1], device=a.device)])
+f_end = fwd(xy[-2])
+print(f"forward displacement (mm, - = backwards): at touchdown mean {f_td.mean()*mm:.1f}; at end mean {f_end.mean()*mm:.1f} p10 {f_end.quantile(.1)*mm:.1f} p90 {f_end.quantile(.9)*mm:.1f}")
