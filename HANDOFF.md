@@ -28,6 +28,14 @@ What each hop changed (docstrings in `tasks/microduck_hopN_env_cfg.py` have the 
 - Hop12: flight = foot clearance x smoothstep(trunk rise / 6 mm) (no longer min() with trunk rise), tuck target = FK squat at knee 1.40 (hip 0.367, ankle 1.033), progress cap 0.04 -> 0.06 with weight 37.5. Foot clearance doubled. Still climbing at end of 3000 its.
 - Hop13: added `hop_airborne_drift` (airborne-only |v_xy| penalty, weight 6). FAILED: cost ~9 mm of foot height, shorter flight, no fix for backwards travel, slightly worse landing. Do not build on it.
 
+### After a restart (do this first)
+```
+cd ~/robotics/microduck_rl_jump
+uv sync
+uv run --with pytest pytest tests/     # expect 296 passed, 1 skipped
+```
+If that passes, the stack is fine. Then resume from "Next step (proposed, NOT started): Hop14" below. Nothing is training after a restart; any run must be relaunched with the commands in "How to run things".
+
 ### Backwards-jump diagnosis (measured on Hop12 37747, `scripts/hop_push.py`)
 - Feet stay planted through the push (slide < 3 mm). The BODY is thrown backwards over them: during the ~11-step push (crouch bottom ~step 29 -> liftoff ~step 39) trunk moves -20 mm relative to the feet, whole-robot CoM from -4 to -20 mm vs feet, and trunk vx at liftoff is -0.41 m/s (vs ~0.6 m/s up). That carries it backwards through the flight. Pitch stays within ~2.4 deg, so it is translation, not a lean.
 - Hop13 failed because it acted only in the air, after direction was set at liftoff, and flying less was the cheapest way to cut the penalty.
