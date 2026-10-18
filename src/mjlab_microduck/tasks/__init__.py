@@ -91,6 +91,10 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop12_env_cfg import (
+    make_microduck_hop12_env_cfg,
+    MicroduckHop12RlCfg,
+)
 from .microduck_hop11_env_cfg import (
     make_microduck_hop11_env_cfg,
     MicroduckHop11RlCfg,
@@ -373,6 +377,15 @@ register_mjlab_task(
     env_cfg=make_microduck_hop11_env_cfg(),
     play_env_cfg=make_microduck_hop11_env_cfg(play=True),
     rl_cfg=MicroduckHop11RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop12 — Hop11 + foot-primary flight score (tucking pays) + FK-solved tuck pose.
+register_mjlab_task(
+    task_id="Mjlab-Hop12-Flat-MicroDuck",
+    env_cfg=make_microduck_hop12_env_cfg(),
+    play_env_cfg=make_microduck_hop12_env_cfg(play=True),
+    rl_cfg=MicroduckHop12RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 

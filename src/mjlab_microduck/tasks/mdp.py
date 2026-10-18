@@ -7986,7 +7986,14 @@ def _update_hop4(
     ids = _hop3_foot_geom_ids(env, asset)
     foot_z = torch.nan_to_num(asset.data.geom_pos_w[:, ids, 2] - origin_z.unsqueeze(1), nan=0.0)
     clearance = torch.clamp(foot_z.min(dim=1).values - foot_rest_z, min=0.0)
-    if getattr(env, "_hop4_trunk_coupled", False):
+    foot_gate_m = getattr(env, "_hop4_foot_primary_gate_m", None)
+    if foot_gate_m is not None:
+        # Hop12: foot clearance is the score (tucking is welcome). The trunk
+        # only has to have genuinely risen foot_gate_m above standing for the
+        # full credit, so a heel kick with no hop still pays nothing.
+        rise = torch.clamp(z - standing_height, min=0.0)
+        clearance = clearance * _smoothstep01(rise / foot_gate_m)
+    elif getattr(env, "_hop4_trunk_coupled", False):
         # Hop7: flight only counts if the TRUNK also rises above standing
         # height, so tucking/flicking the feet up cannot pay on its own.
         clearance = torch.minimum(clearance, torch.clamp(z - standing_height, min=0.0))
@@ -8303,3 +8310,24 @@ def hop9_horizontal_speed_penalty(
     v = torch.nan_to_num(asset.data.root_link_lin_vel_w[:, :2], nan=0.0).norm(dim=1)
     return -torch.clamp(v, max=max_speed)
 
+
+
+def reset_hop12_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    standing_z_min: float = 0.11,
+    standing_z_max: float = 0.12,
+    standing_tilt_max: float = 0.0,
+    joint_noise_std: float = 0.02,
+    foot_gate_m: float = 0.006,
+) -> None:
+    """reset_hop4_state + FOOT-primary flight (see _update_hop4): clearance is
+    scaled by smoothstep(trunk rise / foot_gate_m) instead of min()'d with the
+    trunk rise. Replaces Hop7's trunk-coupled flag on the same env instance."""
+    env._hop4_trunk_coupled = False
+    env._hop4_foot_primary_gate_m = foot_gate_m
+    reset_hop4_state(
+        env, env_ids, asset_cfg, standing_z_min, standing_z_max,
+        standing_tilt_max, joint_noise_std,
+    )
