@@ -91,6 +91,14 @@ from .microduck_hop4_env_cfg import (
     make_microduck_hop4_env_cfg,
     MicroduckHop4RlCfg,
 )
+from .microduck_hop16_env_cfg import (
+    make_microduck_hop16_env_cfg,
+    MicroduckHop16RlCfg,
+)
+from .microduck_hop15_env_cfg import (
+    make_microduck_hop15_env_cfg,
+    MicroduckHop15RlCfg,
+)
 from .microduck_hop14_env_cfg import (
     make_microduck_hop14_env_cfg,
     MicroduckHop14RlCfg,
@@ -412,6 +420,24 @@ register_mjlab_task(
     env_cfg=make_microduck_hop14_env_cfg(),
     play_env_cfg=make_microduck_hop14_env_cfg(play=True),
     rl_cfg=MicroduckHop14RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop15 — Hop12 + trunk-over-feet offset penalty in the push.
+register_mjlab_task(
+    task_id="Mjlab-Hop15-Flat-MicroDuck",
+    env_cfg=make_microduck_hop15_env_cfg(),
+    play_env_cfg=make_microduck_hop15_env_cfg(play=True),
+    rl_cfg=MicroduckHop15RlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Hop16 — Hop14 with push-drift weight 2 (keep foot height).
+register_mjlab_task(
+    task_id="Mjlab-Hop16-Flat-MicroDuck",
+    env_cfg=make_microduck_hop16_env_cfg(),
+    play_env_cfg=make_microduck_hop16_env_cfg(play=True),
+    rl_cfg=MicroduckHop16RlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 

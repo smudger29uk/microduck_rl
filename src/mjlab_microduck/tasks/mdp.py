@@ -8376,3 +8376,30 @@ def hop14_push_drift_penalty(
     vel = torch.nan_to_num(asset.data.root_link_lin_vel_w, nan=0.0)
     pushing = (left | right) & (vel[:, 2] > min_vz)
     return -torch.clamp(vel[:, :2].norm(dim=1), max=max_speed) * pushing.float()
+
+
+def hop15_push_offset_penalty(
+    env: ManagerBasedRlEnv,
+    left_sensor_name: str,
+    right_sensor_name: str,
+    max_offset: float = 0.04,
+    min_vz: float = 0.02,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Self-negating (<= 0): use a POSITIVE weight. -|horizontal offset of the
+    trunk from the feet midpoint| (clamped) while a foot is grounded and the
+    trunk is rising (the push). Penalises the body being thrown over the feet
+    (Hop12: -20 mm at liftoff) rather than its speed. Zero in flight, so it
+    cannot be dodged by flying less. Trunk is used, not whole-robot CoM: the
+    CoM mass indexing was never verified."""
+    left = _sensor_any_contact(env, left_sensor_name)
+    right = _sensor_any_contact(env, right_sensor_name)
+    if left is None or right is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    asset: Entity = env.scene[asset_cfg.name]
+    ids = _hop3_foot_geom_ids(env, asset)
+    feet = torch.nan_to_num(asset.data.geom_pos_w[:, ids, :2], nan=0.0).mean(dim=1)
+    trunk = torch.nan_to_num(asset.data.root_link_pos_w[:, :2], nan=0.0)
+    vz = torch.nan_to_num(asset.data.root_link_lin_vel_w[:, 2], nan=0.0)
+    pushing = (left | right) & (vz > min_vz)
+    return -torch.clamp((trunk - feet).norm(dim=1), max=max_offset) * pushing.float()
