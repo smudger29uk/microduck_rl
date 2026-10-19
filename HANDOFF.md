@@ -11,6 +11,7 @@ Style: UK English, no em dashes, concise, numbered steps, one thing at a time.
 
 ## CURRENT STATUS (2026-10-19, read this first)
 Nothing is training. Best policy: **Hop16 warm `model_42746`** (task `Mjlab-Hop16-Flat-MicroDuck`, = Hop14 with push-drift weight 2.0, warm from Hop12 37747, 5000 its). ONNX: `checkpoints/hop16-warm-42746/policy.onnx` (also on HF `smudger29uk/microduck-hop-local-runs/hop16-warm-42746`). User watched it in the viewer and is about to try it on the REAL robot; outcome pending. Previous best Hop12 37747 is the fallback.
+Published PRIVATE to HF as `smudger29uk/microduck-hop` (episodic, 3.0 s, schema-2 manifest). On the robot: `sudo robotctl policy add hop smudger29uk/microduck-hop`. Button mapping NOT checked yet (the local `microduck` checkout predates the published-policy mechanism). CPU rehearsal (`infer_policy.py --walking ... --new-cmd-obs --foot-friction 2.0 --foot-solref 0.04`) hopped; user saw it.
 
 Hop16 42746: foot clearance 39.0 mm (p90 47, max 60), trunk rise 15.9 mm, 98% fly, crouch 78 mm, forward displacement -42 mm at end. Still jumps backwards: push throws trunk -32 mm vs feet, liftoff vx -0.43 m/s.
 
